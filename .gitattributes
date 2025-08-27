@@ -1,6 +1,7 @@
 *.clj  linguist-detectable=false
 *.cljs linguist-detectable=false
 *.edn  linguist-detectable=false
+*.cl2 linguist-detectable=false
 
 .venv/**              linguist-vendored
 venv/**               linguist-vendored
