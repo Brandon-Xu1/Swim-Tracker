@@ -1,0 +1,13 @@
+*.clj  linguist-detectable=false
+*.cljs linguist-detectable=false
+*.edn  linguist-detectable=false
+
+.venv/**              linguist-vendored
+venv/**               linguist-vendored
+__pycache__/**        linguist-vendored
+.ipynb_checkpoints/** linguist-vendored
+build/**              linguist-vendored
+dist/**               linguist-vendored
+node_modules/**       linguist-vendored
+
+*.py linguist-detectable=true
