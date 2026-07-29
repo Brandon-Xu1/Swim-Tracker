@@ -2,10 +2,17 @@
 
 Swim Tracker is a Streamlit app for importing Hy-Tek/Team Manager `.cl2` meet
 files and searching completed individual swim results. It supports ordinary
-filter-based search without any external service. An OpenAI API key optionally
-enables natural-language search.
+filter-based search and optional natural-language search.
 
-## Requirements
+## Live app
+
+[Launch Swim Tracker](https://swim-tracker.streamlit.app/)
+
+The app is deployed on Streamlit Community Cloud. Use **Filters** to search the
+bundled meet results, or use **Ask AI** to turn a natural-language question into
+validated search filters.
+
+## Local Requirements
 
 - Python 3.12
 - A virtual environment
@@ -62,9 +69,9 @@ export OPENAI_MODEL="gpt-5.6-luna"
 streamlit run streamlit_app.py
 ```
 
-For a hosted deployment, add `OPENAI_API_KEY` through that platform's secret
-or environment-variable settings. Do not place it in source code, a Dockerfile,
-or a committed `.env` file.
+The live Streamlit deployment stores `OPENAI_API_KEY` and `OPENAI_MODEL` under
+**App settings → Secrets** using the same TOML format shown above. Do not place
+the key in source code, a Dockerfile, or a committed `.env` file.
 
 ### Why the key stays hidden
 
