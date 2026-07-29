@@ -103,7 +103,7 @@ def search_page() -> None:
         with st.form("manual_search"):
             name = st.text_input(
                 "Swimmer name",
-                placeholder="For example: Natalie Xu",
+                placeholder="For example: John Doe",
             )
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -149,7 +149,7 @@ def search_page() -> None:
         with st.form("ai_search"):
             query = st.text_input(
                 "Ask about swimmer performance",
-                placeholder="For example: Show Natalie Xu's fastest 100-yard times",
+                placeholder="For example: Show John Doe's fastest 100-yard times",
             )
             ai_submitted = st.form_submit_button(
                 "Interpret and search", type="primary", width="stretch"

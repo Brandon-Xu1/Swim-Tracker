@@ -7,7 +7,7 @@ from swim_tracker.ai_search import AISearchFilters, interpret_search
 class AISearchTests(unittest.TestCase):
     def test_interpretation_returns_validated_filters(self) -> None:
         expected = AISearchFilters(
-            swimmer_name="Natalie Xu",
+            swimmer_name="John Doe",
             group_label=None,
             distance_yards=100,
             stroke=None,
@@ -20,7 +20,7 @@ class AISearchTests(unittest.TestCase):
 
         with patch("swim_tracker.ai_search.OpenAI", return_value=client):
             actual = interpret_search(
-                "Natalie Xu's fastest 100 yard times",
+                "John Doe's fastest 100 yard times",
                 api_key="test-key",
                 model="test-model",
                 available_groups=["Girls 11-12"],
