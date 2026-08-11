@@ -1,9 +1,12 @@
+import os
 from pathlib import Path
 import tempfile
 import unittest
 
 from swim_tracker.database import (
+    _engine,
     delete_source_results,
+    metadata,
     replace_source_results,
     result_count,
     search_results,
@@ -18,6 +21,8 @@ DATA_FILE = (
 
 
 class DatabaseTests(unittest.TestCase):
+    """Runs against a temporary SQLite file, the default backend."""
+
     def setUp(self) -> None:
         self.temp_directory = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp_directory.name) / "test.db"
@@ -94,6 +99,22 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertTrue(matches.empty)
         self.assertEqual(result_count(self.database_path), 3999)
+
+
+@unittest.skipUnless(
+    os.environ.get("SWIMTRACKER_TEST_DATABASE_URL"),
+    "Set SWIMTRACKER_TEST_DATABASE_URL to a Postgres URL to run these",
+)
+class PostgresDatabaseTests(DatabaseTests):
+    """Runs the identical suite against a real Postgres database."""
+
+    def setUp(self) -> None:
+        self.database_path = os.environ["SWIMTRACKER_TEST_DATABASE_URL"]
+        self.results = parse_cl2_file(DATA_FILE)
+        metadata.drop_all(_engine(self.database_path))
+
+    def tearDown(self) -> None:
+        metadata.drop_all(_engine(self.database_path))
 
 
 if __name__ == "__main__":

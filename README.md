@@ -52,6 +52,33 @@ The first launch upgrades the legacy database from the bundled meet file.
 Later Streamlit reruns only read the database; they do not drop or duplicate
 results. Use **Meet data** to import another `.cl2` file.
 
+## Persistent storage with Neon Postgres
+
+By default the app stores data in a local SQLite file, which is perfect for
+development and tests. Streamlit Community Cloud's filesystem is ephemeral,
+though: every redeploy resets local files, so meets uploaded to the live app
+would disappear. To make uploads persist, point the app at a free hosted
+Postgres database:
+
+1. Create a free project at [neon.tech](https://neon.tech) (no credit card
+   required; Neon auto-suspends when idle and wakes on the next connection,
+   so an idle demo app never breaks).
+2. Copy the project's connection string, which looks like
+   `postgresql://user:password@host/dbname?sslmode=require`.
+3. Add it to the deployment's **App settings → Secrets** (or a local
+   `.streamlit/secrets.toml`):
+
+   ```toml
+   DATABASE_URL = "postgresql://user:password@host/dbname?sslmode=require"
+   ```
+
+On first launch against an empty database the app creates the schema and
+seeds the bundled sample meet, exactly as it does locally. Without
+`DATABASE_URL` the app keeps using SQLite, so nothing changes for local
+development. The test suite runs against SQLite by default; set
+`SWIMTRACKER_TEST_DATABASE_URL` to a Postgres URL to run the database tests
+against Postgres as well.
+
 ## Configure the OpenAI API key safely
 
 Filter search works without a key. To enable **Ask AI**, create a new key on

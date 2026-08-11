@@ -8,6 +8,7 @@ from pathlib import Path
 
 from openai import OpenAIError
 import pandas as pd
+from sqlalchemy.exc import SQLAlchemyError
 import streamlit as st
 
 from swim_tracker.ai_search import interpret_search
@@ -33,10 +34,20 @@ DEFAULT_DATA_FILE = (
 )
 
 
-def database_path() -> Path:
-    return Path(
-        os.environ.get("SWIMTRACKER_DB_PATH", APP_ROOT / "swim_data.db")
-    ).expanduser()
+def database_target() -> str:
+    """Pick the database this app instance talks to.
+
+    ``SWIMTRACKER_DB_PATH`` (used by tests) wins, then a hosted
+    ``DATABASE_URL`` such as a Neon Postgres connection string, then the
+    bundled local SQLite file.
+    """
+    override = os.environ.get("SWIMTRACKER_DB_PATH")
+    if override:
+        return override
+    url = _secret("DATABASE_URL")
+    if url:
+        return url
+    return str(APP_ROOT / "swim_data.db")
 
 
 def _secret(name: str, default: str | None = None) -> str | None:
@@ -61,7 +72,7 @@ def prepare_database() -> None:
     Seeding happens at most once per database, so removing every imported meet
     leaves the database empty instead of silently restoring the sample data.
     """
-    path = database_path()
+    path = database_target()
 
     if not schema_is_current(path):
         if not DEFAULT_DATA_FILE.exists():
@@ -122,7 +133,7 @@ def search_page() -> None:
     st.title("Swim Tracker")
     st.write("Search completed individual results from imported meet files.")
 
-    options = filter_options(database_path())
+    options = filter_options(database_target())
     manual_tab, ai_tab = st.tabs(["Filters", "Ask AI"])
 
     with manual_tab:
@@ -171,7 +182,7 @@ def search_page() -> None:
                 date_from = selected_dates[0].isoformat()
                 date_to = selected_dates[1].isoformat()
             results = search_results(
-                database_path(),
+                database_target(),
                 name=name,
                 group_label=None if group == "All groups" else group,
                 event=None if event == "All events" else event,
@@ -251,7 +262,7 @@ def search_page() -> None:
             )
         )
         results = search_results(
-            database_path(),
+            database_target(),
             name=filters.swimmer_name,
             group_label=filters.group_label,
             distance_yards=filters.distance,
@@ -272,7 +283,7 @@ def data_page() -> None:
         "same name replaces that file's previous rows instead of creating duplicates."
     )
 
-    summary = source_summary(database_path())
+    summary = source_summary(database_target())
     if summary.empty:
         st.info("No meet data has been imported.")
     else:
@@ -287,7 +298,7 @@ def data_page() -> None:
             )
             if st.button("Remove this meet's results"):
                 removed = delete_source_results(
-                    database_path(), source_to_remove
+                    database_target(), source_to_remove
                 )
                 st.success(
                     f"Removed {removed:,} results from {source_to_remove}."
@@ -302,14 +313,14 @@ def data_page() -> None:
         if parsed and st.button(
             "Import this meet", type="primary", width="stretch"
         ):
-            replace_source_results(database_path(), parsed)
+            replace_source_results(database_target(), parsed)
             st.success(f"Imported {len(parsed):,} results from {uploaded_file.name}.")
             st.rerun()
 
     st.divider()
     if st.button("Reload bundled sample meet"):
         parsed = parse_cl2_file(DEFAULT_DATA_FILE)
-        replace_source_results(database_path(), parsed)
+        replace_source_results(database_target(), parsed)
         st.success(f"Reloaded {len(parsed):,} completed results.")
         st.rerun()
 
@@ -362,7 +373,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Swim Tracker")
-        st.metric("Completed results", f"{result_count(database_path()):,}")
+        st.metric("Completed results", f"{result_count(database_target()):,}")
         st.caption(
             "AI search ready"
             if _secret("OPENAI_API_KEY")
