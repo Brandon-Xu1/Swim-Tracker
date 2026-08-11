@@ -144,6 +144,20 @@ OpenAI recommends keeping API keys out of code and public repositories and
 providing them through environment variables or a secret manager:
 [OpenAI production best practices](https://developers.openai.com/api/docs/guides/production-best-practices#api-keys).
 
+## Keep the OpenAI bill bounded
+
+Three layers keep a public deployment from running up API costs:
+
+- **Per-visitor rate limit**: each session may ask 5 AI questions per minute
+  and 30 per hour. Filter search is never limited.
+- **Response caching**: identical questions within 24 hours are answered
+  from an in-memory cache without an API call, and cache hits do not
+  consume the rate limit.
+- **Hard spend cap**: set a monthly budget limit on the
+  [OpenAI usage limits page](https://platform.openai.com/settings/organization/limits)
+  so that even in the worst case spending stops at a number you chose.
+  This is configured on the OpenAI dashboard, not in this repository.
+
 ## How AI search is kept safe
 
 The original app asked the model to generate arbitrary SQL and executed the

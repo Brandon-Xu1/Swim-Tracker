@@ -5,15 +5,22 @@ from __future__ import annotations
 from collections.abc import MutableMapping
 from datetime import date
 import hmac
+import math
 import os
 from pathlib import Path
+import time
 
 from openai import OpenAIError
 import pandas as pd
 from sqlalchemy.exc import SQLAlchemyError
 import streamlit as st
 
-from swim_tracker.ai_search import interpret_search
+from swim_tracker.ai_search import AISearchFilters, interpret_search
+from swim_tracker.rate_limit import (
+    RateLimitedError,
+    SlidingWindowLimit,
+    try_acquire,
+)
 from swim_tracker.database import (
     delete_source_results,
     filter_options,
@@ -67,6 +74,37 @@ def _secret(name: str, default: str | None = None) -> str | None:
 
 SEEDED_META_KEY = "seeded_bundled_meet"
 ADMIN_SESSION_KEY = "admin_unlocked"
+
+AI_RATE_LIMITS = (
+    SlidingWindowLimit(max_calls=5, window_seconds=60.0),
+    SlidingWindowLimit(max_calls=30, window_seconds=3600.0),
+)
+AI_HISTORY_SESSION_KEY = "ai_query_times"
+
+
+@st.cache_data(ttl=24 * 3600, max_entries=512, show_spinner=False)
+def _interpret_cached(
+    normalized_query: str,
+    model: str,
+    groups: tuple[str, ...],
+    _api_key: str,
+) -> AISearchFilters:
+    """Interpret a question, hitting OpenAI only on cache misses.
+
+    The rate limit lives inside this cached function on purpose: repeats of
+    a recent question are served from the cache without consuming quota or
+    making an API call.
+    """
+    history = st.session_state.setdefault(AI_HISTORY_SESSION_KEY, [])
+    wait = try_acquire(AI_RATE_LIMITS, history, time.time())
+    if wait > 0:
+        raise RateLimitedError(wait)
+    return interpret_search(
+        normalized_query,
+        api_key=_api_key,
+        model=model,
+        available_groups=list(groups),
+    )
 
 
 def verify_admin_password(supplied: str, expected: str) -> bool:
@@ -266,12 +304,20 @@ def search_page() -> None:
         model = _secret("OPENAI_MODEL", "gpt-5.6-luna")
         try:
             with st.spinner("Interpreting your search…"):
-                filters = interpret_search(
-                    query,
-                    api_key=api_key,
-                    model=model or "gpt-5.6-luna",
-                    available_groups=options["groups"],
+                filters = _interpret_cached(
+                    " ".join(query.split()),
+                    model or "gpt-5.6-luna",
+                    tuple(options["groups"]),
+                    api_key,
                 )
+        except RateLimitedError as exc:
+            st.warning(
+                "AI search is limited to 5 questions per minute and 30 per "
+                "hour for each visitor. Try again in about "
+                f"{max(1, math.ceil(exc.retry_after_seconds))} seconds — "
+                "or use the Filters tab, which has no limit."
+            )
+            return
         except (OpenAIError, ValueError) as exc:
             st.error(
                 "AI search could not interpret that request. Check the API key, "
