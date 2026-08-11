@@ -13,6 +13,8 @@ from .parser import SwimResult
 
 
 SCHEMA_VERSION = 1
+COURSE_LABELS = {"Y": "SCY", "S": "SCM", "L": "LCM"}
+COURSE_CODES = {label: code for code, label in COURSE_LABELS.items()}
 DISPLAY_COLUMNS = [
     "Name",
     "Group",
@@ -61,9 +63,33 @@ def initialize_database(database_path: str | Path) -> None:
                 ON results(distance_yards, stroke);
             CREATE INDEX IF NOT EXISTS results_group_idx
                 ON results(group_label);
+
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def get_meta(database_path: str | Path, key: str) -> str | None:
+    initialize_database(database_path)
+    with connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT value FROM app_meta WHERE key = ?", (key,)
+        ).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_meta(database_path: str | Path, key: str, value: str) -> None:
+    initialize_database(database_path)
+    with connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO app_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def schema_is_current(database_path: str | Path) -> bool:
@@ -129,6 +155,16 @@ def replace_source_results(
     return len(results)
 
 
+def delete_source_results(database_path: str | Path, source_file: str) -> int:
+    """Remove every result imported from one source file."""
+    initialize_database(database_path)
+    with connect(database_path) as connection:
+        cursor = connection.execute(
+            "DELETE FROM results WHERE source_file = ?", (source_file,)
+        )
+        return cursor.rowcount
+
+
 def result_count(database_path: str | Path) -> int:
     initialize_database(database_path)
     with connect(database_path) as connection:
@@ -150,7 +186,7 @@ def source_summary(database_path: str | Path) -> pd.DataFrame:
         return pd.read_sql_query(query, connection)
 
 
-def filter_options(database_path: str | Path) -> dict[str, list[str]]:
+def filter_options(database_path: str | Path) -> dict[str, object]:
     initialize_database(database_path)
     with connect(database_path) as connection:
         groups = [
@@ -174,7 +210,25 @@ def filter_options(database_path: str | Path) -> dict[str, list[str]]:
                 """
             )
         ]
-    return {"groups": groups, "strokes": strokes, "events": events}
+        course_codes = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT course FROM results")
+        }
+        courses = [
+            label
+            for code, label in COURSE_LABELS.items()
+            if code in course_codes
+        ] + sorted(course_codes - COURSE_LABELS.keys())
+        date_row = connection.execute(
+            "SELECT MIN(meet_date), MAX(meet_date) FROM results"
+        ).fetchone()
+    return {
+        "groups": groups,
+        "strokes": strokes,
+        "events": events,
+        "courses": courses,
+        "date_range": tuple(date_row) if date_row and date_row[0] else None,
+    }
 
 
 def search_results(
@@ -185,6 +239,9 @@ def search_results(
     event: str | None = None,
     distance_yards: int | None = None,
     stroke: str | None = None,
+    course: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     sort_order: str = "name",
     limit: int = 200,
 ) -> pd.DataFrame:
@@ -207,6 +264,17 @@ def search_results(
     if stroke:
         clauses.append("stroke = ?")
         parameters.append(stroke)
+    if course:
+        if course not in COURSE_CODES:
+            raise ValueError(f"Unsupported course: {course!r}")
+        clauses.append("course = ?")
+        parameters.append(COURSE_CODES[course])
+    if date_from:
+        clauses.append("meet_date >= ?")
+        parameters.append(date_from)
+    if date_to:
+        clauses.append("meet_date <= ?")
+        parameters.append(date_to)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     order_by = (

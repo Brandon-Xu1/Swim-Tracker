@@ -6,8 +6,11 @@ from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
 
+from swim_tracker.database import delete_source_results
+
 
 ROOT = Path(__file__).resolve().parents[1]
+DATA_FILE_NAME = "Meet Results-2024 TAC TITANS Jingle Bells Meet-20Dec2024-001.cl2"
 
 
 class StreamlitAppTests(unittest.TestCase):
@@ -41,6 +44,32 @@ class StreamlitAppTests(unittest.TestCase):
                 self.assertEqual(len(app.exception), 0)
                 self.assertEqual(len(app.dataframe), 1)
                 self.assertEqual(app.dataframe[0].value.iloc[0]["Time"], "52.08")
+
+    def test_deleted_data_stays_deleted_across_restarts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = str(Path(directory) / "app.db")
+            environment = {
+                "SWIMTRACKER_DB_PATH": database_path,
+                "OPENAI_API_KEY": "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                first_run = AppTest.from_file(
+                    str(ROOT / "streamlit_app.py"), default_timeout=30
+                ).run()
+                self.assertEqual(len(first_run.exception), 0)
+                self.assertTrue(
+                    any("3,999" in metric.value for metric in first_run.metric)
+                )
+
+                delete_source_results(database_path, DATA_FILE_NAME)
+
+                second_run = AppTest.from_file(
+                    str(ROOT / "streamlit_app.py"), default_timeout=30
+                ).run()
+                self.assertEqual(len(second_run.exception), 0)
+                self.assertTrue(
+                    any(metric.value == "0" for metric in second_run.metric)
+                )
 
 
 if __name__ == "__main__":

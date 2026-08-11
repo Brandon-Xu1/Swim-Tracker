@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from swim_tracker.database import (
+    delete_source_results,
     replace_source_results,
     result_count,
     search_results,
@@ -41,6 +42,49 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(matches.empty)
         self.assertTrue((matches["Name"] == "Pierce Arora").all())
         self.assertTrue((matches["Event"] == "100-yard Free").all())
+
+    def test_filters_by_course(self) -> None:
+        replace_source_results(self.database_path, self.results)
+        scy_matches = search_results(
+            self.database_path, course="SCY", limit=1000
+        )
+        lcm_matches = search_results(self.database_path, course="LCM")
+        self.assertFalse(scy_matches.empty)
+        self.assertTrue((scy_matches["Course"] == "SCY").all())
+        self.assertTrue(lcm_matches.empty)
+        with self.assertRaises(ValueError):
+            search_results(self.database_path, course="short course")
+
+    def test_filters_by_date_range(self) -> None:
+        replace_source_results(self.database_path, self.results)
+        all_dates = {result.meet_date for result in self.results}
+        self.assertGreater(len(all_dates), 1)
+        last_date = max(all_dates)
+
+        matches = search_results(
+            self.database_path,
+            date_from=last_date,
+            date_to=last_date,
+            limit=1000,
+        )
+        self.assertFalse(matches.empty)
+        self.assertTrue((matches["Date"] == last_date).all())
+
+        none_matched = search_results(
+            self.database_path, date_from="2030-01-01"
+        )
+        self.assertTrue(none_matched.empty)
+
+    def test_delete_source_removes_only_that_source(self) -> None:
+        replace_source_results(self.database_path, self.results)
+        removed = delete_source_results(
+            self.database_path, self.results[0].source_file
+        )
+        self.assertEqual(removed, 3999)
+        self.assertEqual(result_count(self.database_path), 0)
+        self.assertEqual(
+            delete_source_results(self.database_path, "missing.cl2"), 0
+        )
 
     def test_name_input_cannot_be_executed_as_sql(self) -> None:
         replace_source_results(self.database_path, self.results)

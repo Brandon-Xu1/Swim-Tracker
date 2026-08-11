@@ -85,7 +85,7 @@ def _group_label(age: int, gender: str) -> str:
     return f"{'Girls' if gender == 'F' else 'Boys'} {bracket}"
 
 
-def _parse_event(event_id: str) -> tuple[str, int, str]:
+def _parse_event(event_id: str, course: str) -> tuple[str, int, str]:
     if len(event_id) < 2 or not event_id.isdigit():
         raise ValueError(f"Unsupported event ID: {event_id!r}")
 
@@ -93,7 +93,8 @@ def _parse_event(event_id: str) -> tuple[str, int, str]:
         event_id[-1], ("Unknown", "Unknown")
     )
     distance = int(event_id[:-1])
-    return f"{distance}-yard {short_stroke}", distance, full_stroke
+    unit = "meter" if course in ("L", "S") else "yard"
+    return f"{distance}-{unit} {short_stroke}", distance, full_stroke
 
 
 def _parse_date(raw_date: str) -> str:
@@ -121,7 +122,8 @@ def parse_cl2_text(text: str, source_file: str = "uploaded.cl2") -> list[SwimRes
         try:
             age, gender = _parse_age_gender(line[63:67])
             event_id = line[67:72].strip()
-            event, distance, stroke = _parse_event(event_id)
+            course = line[96:97].strip() or "Unknown"
+            event, distance, stroke = _parse_event(event_id, course)
             result = SwimResult(
                 source_file=source_file,
                 source_row=row_number,
@@ -136,7 +138,7 @@ def parse_cl2_text(text: str, source_file: str = "uploaded.cl2") -> list[SwimRes
                 stroke=stroke,
                 time=raw_time,
                 time_seconds=parse_time_to_seconds(raw_time),
-                course=line[96:97].strip() or "Unknown",
+                course=course,
                 meet_date=_parse_date(line[80:88]),
             )
         except (TypeError, ValueError):

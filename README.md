@@ -4,6 +4,22 @@ Swim Tracker is a Streamlit app for importing Hy-Tek/Team Manager `.cl2` meet
 files and searching completed individual swim results. It supports ordinary
 filter-based search and optional natural-language search.
 
+## Features
+
+- **Filter search** by swimmer name, age/gender group, event, course
+  (SCY, SCM, or LCM), and meet-date range, sorted by swimmer or fastest time,
+  with CSV download of the matching results.
+- **Ask AI** turns a natural-language question, such as *"fastest 100 free
+  times for girls 11-12 in December 2024"*, into the same validated filters —
+  including course and date ranges — without ever executing model output as
+  SQL.
+- **Meet data management**: import any number of `.cl2` files, re-import a
+  file to replace its earlier rows without duplicates, and remove any imported
+  meet again. Removed data stays removed across restarts; the bundled sample
+  meet is only seeded into a brand-new database once.
+- **Course-aware event labels**: events from meter meets (course `L` or `S`)
+  are labeled in meters, and yard meets in yards.
+
 ## Live app
 
 [Launch Swim Tracker](https://swim-tracker.streamlit.app/)
@@ -111,5 +127,9 @@ Run the test suite from the repository root:
 python -m unittest discover -s tests -v
 ```
 
-The suite checks fixed-width parsing, correct 1,650-yard and long-time parsing,
-idempotent database imports, parameterized searches, and Streamlit startup.
+The suite checks fixed-width parsing (including meter-course event labels and
+1,650-yard and long-time parsing), idempotent database imports, parameterized
+searches with course and date-range filters, per-meet deletion, the AI layer's
+happy path and its error paths (unparseable model output, hallucinated age
+groups, invalid dates), and Streamlit startup including seed-once behavior
+after all meets are deleted.

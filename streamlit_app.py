@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 import os
 from pathlib import Path
 
@@ -11,13 +12,16 @@ import streamlit as st
 
 from swim_tracker.ai_search import interpret_search
 from swim_tracker.database import (
+    delete_source_results,
     filter_options,
+    get_meta,
     initialize_database,
     rebuild_database,
     replace_source_results,
     result_count,
     schema_is_current,
     search_results,
+    set_meta,
     source_summary,
 )
 from swim_tracker.parser import parse_cl2_file, parse_cl2_text
@@ -48,8 +52,15 @@ def _secret(name: str, default: str | None = None) -> str | None:
     return str(value) if value else default
 
 
+SEEDED_META_KEY = "seeded_bundled_meet"
+
+
 def prepare_database() -> None:
-    """Upgrade legacy data once and seed an empty database from bundled data."""
+    """Upgrade legacy data once and seed a brand-new database from bundled data.
+
+    Seeding happens at most once per database, so removing every imported meet
+    leaves the database empty instead of silently restoring the sample data.
+    """
     path = database_path()
 
     if not schema_is_current(path):
@@ -58,11 +69,19 @@ def prepare_database() -> None:
                 "The database needs rebuilding, but the bundled CL2 file is missing."
             )
         rebuild_database(path, parse_cl2_file(DEFAULT_DATA_FILE))
+        set_meta(path, SEEDED_META_KEY, "1")
         return
 
     initialize_database(path)
-    if result_count(path) == 0 and DEFAULT_DATA_FILE.exists():
+    already_seeded = get_meta(path, SEEDED_META_KEY) == "1"
+    if (
+        result_count(path) == 0
+        and not already_seeded
+        and DEFAULT_DATA_FILE.exists()
+    ):
         replace_source_results(path, parse_cl2_file(DEFAULT_DATA_FILE))
+    if not already_seeded and result_count(path) > 0:
+        set_meta(path, SEEDED_META_KEY, "1")
 
 
 def _show_results(results: pd.DataFrame) -> None:
@@ -75,6 +94,13 @@ def _show_results(results: pd.DataFrame) -> None:
         results.drop(columns=["Time (Seconds)"]),
         width="stretch",
         hide_index=True,
+    )
+
+    st.download_button(
+        "Download these results as CSV",
+        results.drop(columns=["Time (Seconds)"]).to_csv(index=False),
+        file_name="swim-results.csv",
+        mime="text/csv",
     )
 
     if len(results) <= 100:
@@ -100,6 +126,7 @@ def search_page() -> None:
     manual_tab, ai_tab = st.tabs(["Filters", "Ask AI"])
 
     with manual_tab:
+        date_bounds = options["date_range"]
         with st.form("manual_search"):
             name = st.text_input(
                 "Swimmer name",
@@ -113,8 +140,25 @@ def search_page() -> None:
             with col2:
                 event = st.selectbox("Event", ["All events", *options["events"]])
             with col3:
+                course = st.selectbox(
+                    "Course", ["All courses", *options["courses"]]
+                )
+            col4, col5 = st.columns([1, 2])
+            with col4:
                 sort_label = st.selectbox(
                     "Sort by", ["Swimmer and event", "Fastest time"]
+                )
+            with col5:
+                selected_dates = (
+                    st.date_input(
+                        "Meet dates",
+                        value=(
+                            date.fromisoformat(date_bounds[0]),
+                            date.fromisoformat(date_bounds[1]),
+                        ),
+                    )
+                    if date_bounds
+                    else None
                 )
             limit = st.slider("Maximum results", 25, 500, 200, step=25)
             submitted = st.form_submit_button(
@@ -122,11 +166,18 @@ def search_page() -> None:
             )
 
         if submitted:
+            date_from = date_to = None
+            if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+                date_from = selected_dates[0].isoformat()
+                date_to = selected_dates[1].isoformat()
             results = search_results(
                 database_path(),
                 name=name,
                 group_label=None if group == "All groups" else group,
                 event=None if event == "All events" else event,
+                course=None if course == "All courses" else course,
+                date_from=date_from,
+                date_to=date_to,
                 sort_order=(
                     "fastest" if sort_label == "Fastest time" else "name"
                 ),
@@ -149,7 +200,10 @@ def search_page() -> None:
         with st.form("ai_search"):
             query = st.text_input(
                 "Ask about swimmer performance",
-                placeholder="For example: Show John Doe's fastest 100-yard times",
+                placeholder=(
+                    "For example: Fastest 100 free times for girls 11-12 "
+                    "in December 2024"
+                ),
             )
             ai_submitted = st.form_submit_button(
                 "Interpret and search", type="primary", width="stretch"
@@ -181,12 +235,11 @@ def search_page() -> None:
         selected_filters = {
             "Swimmer": filters.swimmer_name,
             "Group": filters.group_label,
-            "Distance": (
-                f"{filters.distance_yards} yards"
-                if filters.distance_yards is not None
-                else None
-            ),
+            "Distance": filters.distance,
             "Stroke": filters.stroke,
+            "Course": filters.course,
+            "From": filters.date_from,
+            "To": filters.date_to,
             "Sort": filters.sort_order,
         }
         st.caption(
@@ -201,8 +254,11 @@ def search_page() -> None:
             database_path(),
             name=filters.swimmer_name,
             group_label=filters.group_label,
-            distance_yards=filters.distance_yards,
+            distance_yards=filters.distance,
             stroke=filters.stroke,
+            course=filters.course,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
             sort_order=filters.sort_order,
             limit=filters.max_results,
         )
@@ -221,6 +277,22 @@ def data_page() -> None:
         st.info("No meet data has been imported.")
     else:
         st.dataframe(summary, width="stretch", hide_index=True)
+        with st.expander("Remove an imported meet"):
+            source_to_remove = st.selectbox(
+                "Meet file to remove", summary["Source file"]
+            )
+            st.caption(
+                "This permanently removes every result imported from the "
+                "selected file."
+            )
+            if st.button("Remove this meet's results"):
+                removed = delete_source_results(
+                    database_path(), source_to_remove
+                )
+                st.success(
+                    f"Removed {removed:,} results from {source_to_remove}."
+                )
+                st.rerun()
 
     uploaded_file = st.file_uploader("Choose a CL2 file", type=["cl2"])
     if uploaded_file is not None:
@@ -242,17 +314,36 @@ def data_page() -> None:
         st.rerun()
 
 
-def resources_page() -> None:
-    st.title("Resources")
-    st.write(
-        "Use the search page for meet results. The embedded SwimCloud profile "
-        "below is retained from the original project."
-    )
-    st.components.v1.html(
-        '<iframe src="https://www.swimcloud.com/swimmer/1050995/iframe/'
-        '?splashes_type=fastest" width="100%" height="600" '
-        'frameborder="0" title="SwimCloud swimmer profile"></iframe>',
-        height=620,
+def about_page() -> None:
+    st.title("About Swim Tracker")
+    st.markdown(
+        """
+Swim Tracker imports Hy-Tek/Team Manager `.cl2` meet-result files and makes
+completed individual results searchable.
+
+**Search** supports filtering by swimmer name, age/gender group, event,
+course (SCY, SCM, or LCM), and meet date, with results sortable by swimmer
+or by fastest time. Matching results can be downloaded as CSV.
+
+**Ask AI** turns a natural-language question, such as *"fastest 100 free
+times for girls 11-12 in December 2024"*, into the same validated filters.
+The model returns structured filter values only; those values are bound as
+parameters into fixed SQL queries, so model output is never executed as SQL
+and swimmer-name input cannot be either.
+
+**Meet data** imports additional `.cl2` files. Re-importing a file with the
+same name replaces its earlier rows, and any imported meet can be removed
+again without affecting the others.
+
+The bundled sample data is one publicly published meet-results file. All
+data stays in a local SQLite database on the server; the only external call
+is the optional OpenAI request that interprets **Ask AI** questions, which
+sends the question text and the list of age groups, never the results
+themselves.
+
+Source code and documentation:
+[github.com/Brandon-Xu1/Swim-Tracker](https://github.com/Brandon-Xu1/Swim-Tracker)
+        """
     )
 
 
@@ -282,7 +373,7 @@ def main() -> None:
         [
             st.Page(search_page, title="Search", icon="🔎", default=True),
             st.Page(data_page, title="Meet data", icon="📥"),
-            st.Page(resources_page, title="Resources", icon="🔗"),
+            st.Page(about_page, title="About", icon="ℹ️"),
         ]
     )
     navigation.run()
