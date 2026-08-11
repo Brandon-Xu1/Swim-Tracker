@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -23,10 +24,12 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Table,
     Text,
     UniqueConstraint,
+    bindparam,
     create_engine,
     inspect,
     text,
@@ -47,7 +50,11 @@ REQUIRED_RESULT_COLUMNS = {
     "event_id",
     "time_seconds",
     "meet_date",
+    "team_id",
 }
+
+# Team 0 is the public demo data that every visitor can search.
+PUBLIC_TEAM_ID = 0
 
 metadata = MetaData()
 
@@ -55,6 +62,7 @@ results_table = Table(
     "results",
     metadata,
     Column("id", Integer, primary_key=True),
+    Column("team_id", Integer, nullable=False, server_default="0"),
     Column("source_file", Text, nullable=False),
     Column("source_row", Integer, nullable=False),
     Column("athlete_id", Text, nullable=False),
@@ -70,10 +78,13 @@ results_table = Table(
     Column("time_seconds", Float, nullable=False),
     Column("course", Text, nullable=False),
     Column("meet_date", Text, nullable=False),
-    UniqueConstraint("source_file", "source_row", name="uq_results_source"),
+    UniqueConstraint(
+        "team_id", "source_file", "source_row", name="uq_results_team_source"
+    ),
     Index("results_name_idx", "name"),
     Index("results_event_idx", "distance_yards", "stroke"),
     Index("results_group_idx", "group_label"),
+    Index("results_team_idx", "team_id"),
 )
 
 app_meta_table = Table(
@@ -81,6 +92,27 @@ app_meta_table = Table(
     metadata,
     Column("key", Text, primary_key=True),
     Column("value", Text, nullable=False),
+)
+
+teams_table = Table(
+    "teams",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("name_key", Text, nullable=False, unique=True),
+    Column("password_hash", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+)
+
+raw_files_table = Table(
+    "raw_files",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("team_id", Integer, nullable=False),
+    Column("filename", Text, nullable=False),
+    Column("content", LargeBinary, nullable=False),
+    Column("uploaded_at", Text, nullable=False),
+    UniqueConstraint("team_id", "filename", name="uq_raw_files_team_filename"),
 )
 
 
@@ -122,6 +154,10 @@ def _forget_engine(target: str | Path) -> None:
     engine = _ENGINES.pop(_database_url(target), None)
     if engine is not None:
         engine.dispose()
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def initialize_database(target: str | Path) -> None:
@@ -184,8 +220,17 @@ def rebuild_database(
     return len(results)
 
 
+def _team_scope(team_ids: Sequence[int] | None) -> list[int]:
+    """Which teams' rows are visible; public data only unless stated."""
+    if team_ids is None:
+        return [PUBLIC_TEAM_ID]
+    return list(team_ids)
+
+
 def replace_source_results(
-    target: str | Path, results: Sequence[SwimResult]
+    target: str | Path,
+    results: Sequence[SwimResult],
+    team_id: int = PUBLIC_TEAM_ID,
 ) -> int:
     """Replace one imported source atomically; repeated imports do not duplicate."""
     if not results:
@@ -196,7 +241,7 @@ def replace_source_results(
     if any(result.source_file != source_file for result in results):
         raise ValueError("All results in one import must have the same source file.")
 
-    columns = list(asdict(results[0]).keys())
+    columns = ["team_id", *asdict(results[0]).keys()]
     insert_sql = text(
         f"INSERT INTO results ({', '.join(columns)}) "
         f"VALUES ({', '.join(f':{column}' for column in columns)})"
@@ -204,33 +249,63 @@ def replace_source_results(
 
     with _engine(target).begin() as connection:
         connection.execute(
-            text("DELETE FROM results WHERE source_file = :source_file"),
-            {"source_file": source_file},
+            text(
+                "DELETE FROM results "
+                "WHERE source_file = :source_file AND team_id = :team_id"
+            ),
+            {"source_file": source_file, "team_id": team_id},
         )
-        connection.execute(insert_sql, [asdict(result) for result in results])
+        connection.execute(
+            insert_sql,
+            [
+                {"team_id": team_id, **asdict(result)}
+                for result in results
+            ],
+        )
     return len(results)
 
 
-def delete_source_results(target: str | Path, source_file: str) -> int:
-    """Remove every result imported from one source file."""
+def delete_source_results(
+    target: str | Path, source_file: str, team_id: int = PUBLIC_TEAM_ID
+) -> int:
+    """Remove one team's results and stored original for one source file."""
     initialize_database(target)
     with _engine(target).begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM raw_files "
+                "WHERE filename = :source_file AND team_id = :team_id"
+            ),
+            {"source_file": source_file, "team_id": team_id},
+        )
         outcome = connection.execute(
-            text("DELETE FROM results WHERE source_file = :source_file"),
-            {"source_file": source_file},
+            text(
+                "DELETE FROM results "
+                "WHERE source_file = :source_file AND team_id = :team_id"
+            ),
+            {"source_file": source_file, "team_id": team_id},
         )
         return outcome.rowcount
 
 
-def result_count(target: str | Path) -> int:
+def result_count(
+    target: str | Path, team_ids: Sequence[int] | None = None
+) -> int:
     initialize_database(target)
+    query = text(
+        "SELECT COUNT(*) FROM results WHERE team_id IN :team_ids"
+    ).bindparams(bindparam("team_ids", expanding=True))
     with _engine(target).connect() as connection:
         return int(
-            connection.execute(text("SELECT COUNT(*) FROM results")).scalar_one()
+            connection.execute(
+                query, {"team_ids": _team_scope(team_ids)}
+            ).scalar_one()
         )
 
 
-def source_summary(target: str | Path) -> pd.DataFrame:
+def source_summary(
+    target: str | Path, team_id: int = PUBLIC_TEAM_ID
+) -> pd.DataFrame:
     initialize_database(target)
     query = text(
         """
@@ -239,45 +314,136 @@ def source_summary(target: str | Path) -> pd.DataFrame:
                MIN(meet_date) AS "First date",
                MAX(meet_date) AS "Last date"
         FROM results
+        WHERE team_id = :team_id
         GROUP BY source_file
         ORDER BY MAX(meet_date) DESC, source_file
         """
     )
     with _engine(target).connect() as connection:
-        return pd.read_sql_query(query, connection)
+        return pd.read_sql_query(query, connection, params={"team_id": team_id})
 
 
-def filter_options(target: str | Path) -> dict[str, object]:
+def create_team(target: str | Path, name: str, password_hash: str) -> int:
+    """Store a team account; the display name is unique case-insensitively."""
     initialize_database(target)
+    name_key = name.strip().lower()
+    with _engine(target).begin() as connection:
+        existing = connection.execute(
+            text("SELECT id FROM teams WHERE name_key = :name_key"),
+            {"name_key": name_key},
+        ).fetchone()
+        if existing is not None:
+            raise ValueError("That team name is already registered.")
+        outcome = connection.execute(
+            teams_table.insert().values(
+                name=name.strip(),
+                name_key=name_key,
+                password_hash=password_hash,
+                created_at=_utc_now_iso(),
+            )
+        )
+        return int(outcome.inserted_primary_key[0])
+
+
+def get_team(target: str | Path, name: str):
+    """Return the (id, name, password_hash) row for a team name, or None."""
+    initialize_database(target)
+    with _engine(target).connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT id, name, password_hash FROM teams "
+                "WHERE name_key = :name_key"
+            ),
+            {"name_key": name.strip().lower()},
+        ).fetchone()
+
+
+def save_raw_file(
+    target: str | Path, team_id: int, filename: str, content: bytes
+) -> None:
+    """Keep the original uploaded file so it can be downloaded again."""
+    initialize_database(target)
+    with _engine(target).begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM raw_files "
+                "WHERE team_id = :team_id AND filename = :filename"
+            ),
+            {"team_id": team_id, "filename": filename},
+        )
+        connection.execute(
+            raw_files_table.insert().values(
+                team_id=team_id,
+                filename=filename,
+                content=content,
+                uploaded_at=_utc_now_iso(),
+            )
+        )
+
+
+def get_raw_file(
+    target: str | Path, team_id: int, filename: str
+) -> bytes | None:
+    initialize_database(target)
+    with _engine(target).connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT content FROM raw_files "
+                "WHERE team_id = :team_id AND filename = :filename"
+            ),
+            {"team_id": team_id, "filename": filename},
+        ).fetchone()
+    return None if row is None else bytes(row[0])
+
+
+def filter_options(
+    target: str | Path, team_ids: Sequence[int] | None = None
+) -> dict[str, object]:
+    initialize_database(target)
+    scope = {"team_ids": _team_scope(team_ids)}
+
+    def scoped(sql: str):
+        return text(sql).bindparams(bindparam("team_ids", expanding=True))
+
     with _engine(target).connect() as connection:
         groups = [
             row[0]
             for row in connection.execute(
-                text(
+                scoped(
                     "SELECT DISTINCT group_label FROM results "
-                    "ORDER BY group_label"
-                )
+                    "WHERE team_id IN :team_ids ORDER BY group_label"
+                ),
+                scope,
             )
         ]
         strokes = [
             row[0]
             for row in connection.execute(
-                text("SELECT DISTINCT stroke FROM results ORDER BY stroke")
+                scoped(
+                    "SELECT DISTINCT stroke FROM results "
+                    "WHERE team_id IN :team_ids ORDER BY stroke"
+                ),
+                scope,
             )
         ]
         events = [
             row[0]
             for row in connection.execute(
-                text(
-                    "SELECT event FROM results GROUP BY event "
-                    "ORDER BY MIN(distance_yards), MIN(stroke)"
-                )
+                scoped(
+                    "SELECT event FROM results WHERE team_id IN :team_ids "
+                    "GROUP BY event ORDER BY MIN(distance_yards), MIN(stroke)"
+                ),
+                scope,
             )
         ]
         course_codes = {
             row[0]
             for row in connection.execute(
-                text("SELECT DISTINCT course FROM results")
+                scoped(
+                    "SELECT DISTINCT course FROM results "
+                    "WHERE team_id IN :team_ids"
+                ),
+                scope,
             )
         }
         courses = [
@@ -286,7 +452,11 @@ def filter_options(target: str | Path) -> dict[str, object]:
             if code in course_codes
         ] + sorted(course_codes - COURSE_LABELS.keys())
         date_row = connection.execute(
-            text("SELECT MIN(meet_date), MAX(meet_date) FROM results")
+            scoped(
+                "SELECT MIN(meet_date), MAX(meet_date) FROM results "
+                "WHERE team_id IN :team_ids"
+            ),
+            scope,
         ).fetchone()
     return {
         "groups": groups,
@@ -310,10 +480,11 @@ def search_results(
     date_to: str | None = None,
     sort_order: str = "name",
     limit: int = 200,
+    team_ids: Sequence[int] | None = None,
 ) -> pd.DataFrame:
     """Search results with fixed SQL and bound values only."""
-    clauses: list[str] = []
-    parameters: dict[str, object] = {}
+    clauses: list[str] = ["team_id IN :team_ids"]
+    parameters: dict[str, object] = {"team_ids": _team_scope(team_ids)}
 
     if name and name.strip():
         clauses.append("LOWER(name) LIKE :name")
@@ -342,7 +513,7 @@ def search_results(
         clauses.append("meet_date <= :date_to")
         parameters["date_to"] = date_to
 
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    where = f"WHERE {' AND '.join(clauses)}"
     order_by = (
         "time_seconds ASC, LOWER(name) ASC"
         if sort_order == "fastest"
@@ -369,7 +540,7 @@ def search_results(
         ORDER BY {order_by}
         LIMIT :limit
         """
-    )
+    ).bindparams(bindparam("team_ids", expanding=True))
 
     with _engine(target).connect() as connection:
         return pd.read_sql_query(query, connection, params=parameters)

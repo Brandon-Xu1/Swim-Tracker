@@ -21,6 +21,11 @@ filter-based search and optional natural-language search.
   meet is only seeded into a brand-new database once.
 - **Course-aware event labels**: events from meter meets (course `L` or `S`)
   are labeled in meters, and yard meets in yards.
+- **Team accounts**: anyone can register a team (sidebar) and import meets
+  that are visible only to that team's signed-in sessions, alongside the
+  shared public demo data. Passwords are stored as salted scrypt hashes;
+  originals of imported files are stored and downloadable. The public demo
+  data itself is managed by the deployment admin.
 
 ## Live app
 
@@ -184,5 +189,8 @@ The suite checks fixed-width parsing (including meter-course event labels and
 1,650-yard and long-time parsing), idempotent database imports, parameterized
 searches with course and date-range filters, per-meet deletion, the AI layer's
 happy path and its error paths (unparseable model output, hallucinated age
-groups, invalid dates), and Streamlit startup including seed-once behavior
-after all meets are deleted.
+groups, invalid dates), rate limiting and response caching, the admin gate,
+password hashing and team registration, per-team data isolation, stored
+original files, and Streamlit startup including seed-once behavior after all
+meets are deleted. The database tests additionally run against real Postgres
+in CI and wherever `SWIMTRACKER_TEST_DATABASE_URL` is set.

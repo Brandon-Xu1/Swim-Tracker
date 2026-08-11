@@ -32,8 +32,14 @@ class StreamlitAppTests(unittest.TestCase):
                     any("3,999" in metric.value for metric in app.metric)
                 )
 
-                app.text_input[0].set_value("Pierce Arora")
-                app.selectbox[1].select("100-yard Free")
+                next(
+                    field
+                    for field in app.text_input
+                    if field.label == "Swimmer name"
+                ).set_value("Pierce Arora")
+                next(
+                    box for box in app.selectbox if box.label == "Event"
+                ).select("100-yard Free")
                 next(
                     button
                     for button in app.button

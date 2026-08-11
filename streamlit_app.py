@@ -16,19 +16,23 @@ from sqlalchemy.exc import SQLAlchemyError
 import streamlit as st
 
 from swim_tracker.ai_search import AISearchFilters, interpret_search
+from swim_tracker.auth import authenticate_team, register_team
 from swim_tracker.rate_limit import (
     RateLimitedError,
     SlidingWindowLimit,
     try_acquire,
 )
 from swim_tracker.database import (
+    PUBLIC_TEAM_ID,
     delete_source_results,
     filter_options,
     get_meta,
+    get_raw_file,
     initialize_database,
     rebuild_database,
     replace_source_results,
     result_count,
+    save_raw_file,
     schema_is_current,
     search_results,
     set_meta,
@@ -124,6 +128,82 @@ def admin_unlocked(session: MutableMapping | None = None) -> bool:
     return bool(session.get(ADMIN_SESSION_KEY))
 
 
+TEAM_SESSION_KEY = "team_account"
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+
+
+def current_team(session: MutableMapping | None = None) -> tuple[int, str] | None:
+    """The signed-in team's (id, name), or None for anonymous visitors."""
+    if session is None:
+        session = st.session_state
+    stored = session.get(TEAM_SESSION_KEY)
+    if not stored:
+        return None
+    return int(stored["id"]), str(stored["name"])
+
+
+def visible_team_ids(session: MutableMapping | None = None) -> list[int]:
+    """Everyone sees the public demo data; teams also see their own."""
+    team = current_team(session)
+    if team is None:
+        return [PUBLIC_TEAM_ID]
+    return [PUBLIC_TEAM_ID, team[0]]
+
+
+def _render_account_sidebar() -> None:
+    team = current_team()
+    if team is not None:
+        st.caption(f"Signed in as **{team[1]}**")
+        if st.button("Sign out", width="stretch"):
+            del st.session_state[TEAM_SESSION_KEY]
+            st.rerun()
+        return
+
+    with st.expander("Team account"):
+        sign_in_tab, register_tab = st.tabs(["Sign in", "Register"])
+        with sign_in_tab:
+            with st.form("team_sign_in"):
+                name = st.text_input("Team name")
+                password = st.text_input("Team password", type="password")
+                submitted = st.form_submit_button("Sign in", width="stretch")
+            if submitted:
+                account = authenticate_team(database_target(), name, password)
+                if account is None:
+                    st.error("Unknown team name or wrong password.")
+                else:
+                    st.session_state[TEAM_SESSION_KEY] = {
+                        "id": account[0],
+                        "name": account[1],
+                    }
+                    st.rerun()
+        with register_tab:
+            with st.form("team_register"):
+                new_name = st.text_input("New team name")
+                new_password = st.text_input(
+                    "Choose a password (8+ characters)", type="password"
+                )
+                confirm = st.text_input("Repeat the password", type="password")
+                registered = st.form_submit_button(
+                    "Create team", width="stretch"
+                )
+            if registered:
+                if new_password != confirm:
+                    st.error("The two passwords do not match.")
+                else:
+                    try:
+                        team_id = register_team(
+                            database_target(), new_name, new_password
+                        )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state[TEAM_SESSION_KEY] = {
+                            "id": team_id,
+                            "name": " ".join(new_name.split()),
+                        }
+                        st.rerun()
+
+
 def _render_admin_login() -> None:
     st.info(
         "Importing or removing meet data on this deployment requires the "
@@ -155,6 +235,12 @@ def prepare_database() -> None:
                 "The database needs rebuilding, but the bundled CL2 file is missing."
             )
         rebuild_database(path, parse_cl2_file(DEFAULT_DATA_FILE))
+        save_raw_file(
+            path,
+            PUBLIC_TEAM_ID,
+            DEFAULT_DATA_FILE.name,
+            DEFAULT_DATA_FILE.read_bytes(),
+        )
         set_meta(path, SEEDED_META_KEY, "1")
         return
 
@@ -166,6 +252,12 @@ def prepare_database() -> None:
         and DEFAULT_DATA_FILE.exists()
     ):
         replace_source_results(path, parse_cl2_file(DEFAULT_DATA_FILE))
+        save_raw_file(
+            path,
+            PUBLIC_TEAM_ID,
+            DEFAULT_DATA_FILE.name,
+            DEFAULT_DATA_FILE.read_bytes(),
+        )
     if not already_seeded and result_count(path) > 0:
         set_meta(path, SEEDED_META_KEY, "1")
 
@@ -208,7 +300,7 @@ def search_page() -> None:
     st.title("Swim Tracker")
     st.write("Search completed individual results from imported meet files.")
 
-    options = filter_options(database_target())
+    options = filter_options(database_target(), team_ids=visible_team_ids())
     manual_tab, ai_tab = st.tabs(["Filters", "Ask AI"])
 
     with manual_tab:
@@ -268,6 +360,7 @@ def search_page() -> None:
                     "fastest" if sort_label == "Fastest time" else "name"
                 ),
                 limit=limit,
+                team_ids=visible_team_ids(),
             )
             _show_results(results)
         else:
@@ -355,28 +448,17 @@ def search_page() -> None:
             date_to=filters.date_to,
             sort_order=filters.sort_order,
             limit=filters.max_results,
+            team_ids=visible_team_ids(),
         )
         _show_results(results)
 
 
-def data_page() -> None:
-    st.title("Meet Data")
-    st.write(
-        "Import a Hy-Tek/Team Manager `.cl2` file. Re-importing a file with the "
-        "same name replaces that file's previous rows instead of creating duplicates."
-    )
-
-    summary = source_summary(database_target())
+def _render_meet_manager(team_id: int, *, include_bundled_reload: bool) -> None:
+    summary = source_summary(database_target(), team_id=team_id)
     if summary.empty:
-        st.info("No meet data has been imported.")
+        st.info("No meet data has been imported yet.")
     else:
         st.dataframe(summary, width="stretch", hide_index=True)
-
-    if not admin_unlocked():
-        _render_admin_login()
-        return
-
-    if not summary.empty:
         with st.expander("Remove an imported meet"):
             source_to_remove = st.selectbox(
                 "Meet file to remove", summary["Source file"]
@@ -387,31 +469,102 @@ def data_page() -> None:
             )
             if st.button("Remove this meet's results"):
                 removed = delete_source_results(
-                    database_target(), source_to_remove
+                    database_target(), source_to_remove, team_id=team_id
                 )
                 st.success(
                     f"Removed {removed:,} results from {source_to_remove}."
                 )
                 st.rerun()
+        with st.expander("Download an original meet file"):
+            source_to_download = st.selectbox(
+                "Meet file to download", summary["Source file"]
+            )
+            original = get_raw_file(
+                database_target(), team_id, source_to_download
+            )
+            if original is None:
+                st.caption("No original file is stored for this import.")
+            else:
+                st.download_button(
+                    f"Download {source_to_download}",
+                    original,
+                    file_name=source_to_download,
+                    mime="application/octet-stream",
+                )
 
     uploaded_file = st.file_uploader("Choose a CL2 file", type=["cl2"])
     if uploaded_file is not None:
-        text = uploaded_file.getvalue().decode("utf-8", errors="replace")
-        parsed = parse_cl2_text(text, source_file=uploaded_file.name)
-        st.write(f"Found **{len(parsed):,} completed individual results**.")
-        if parsed and st.button(
-            "Import this meet", type="primary", width="stretch"
-        ):
-            replace_source_results(database_target(), parsed)
-            st.success(f"Imported {len(parsed):,} results from {uploaded_file.name}.")
+        raw = uploaded_file.getvalue()
+        if len(raw) > MAX_UPLOAD_BYTES:
+            st.error(
+                "That file is larger than the "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB import limit."
+            )
+        else:
+            text = raw.decode("utf-8", errors="replace")
+            parsed = parse_cl2_text(text, source_file=uploaded_file.name)
+            st.write(
+                f"Found **{len(parsed):,} completed individual results**."
+            )
+            if parsed and st.button(
+                "Import this meet", type="primary", width="stretch"
+            ):
+                replace_source_results(
+                    database_target(), parsed, team_id=team_id
+                )
+                save_raw_file(
+                    database_target(), team_id, uploaded_file.name, raw
+                )
+                st.success(
+                    f"Imported {len(parsed):,} results from "
+                    f"{uploaded_file.name}."
+                )
+                st.rerun()
+
+    if include_bundled_reload:
+        st.divider()
+        if st.button("Reload bundled sample meet"):
+            parsed = parse_cl2_file(DEFAULT_DATA_FILE)
+            replace_source_results(
+                database_target(), parsed, team_id=PUBLIC_TEAM_ID
+            )
+            save_raw_file(
+                database_target(),
+                PUBLIC_TEAM_ID,
+                DEFAULT_DATA_FILE.name,
+                DEFAULT_DATA_FILE.read_bytes(),
+            )
+            st.success(f"Reloaded {len(parsed):,} completed results.")
             st.rerun()
 
-    st.divider()
-    if st.button("Reload bundled sample meet"):
-        parsed = parse_cl2_file(DEFAULT_DATA_FILE)
-        replace_source_results(database_target(), parsed)
-        st.success(f"Reloaded {len(parsed):,} completed results.")
-        st.rerun()
+
+def data_page() -> None:
+    st.title("Meet Data")
+
+    team = current_team()
+    if team is not None:
+        team_id, team_name = team
+        st.write(
+            f"Meets imported here belong to **{team_name}**. They appear in "
+            "searches only while this team is signed in, alongside the public "
+            "demo data. Re-importing a file with the same name replaces that "
+            "file's previous rows instead of creating duplicates."
+        )
+        _render_meet_manager(team_id, include_bundled_reload=False)
+        return
+
+    st.write(
+        "This page manages the shared public demo data that every visitor "
+        "can search. Sign in or register a team account in the sidebar to "
+        "import meets that only your team can see."
+    )
+    if not admin_unlocked():
+        summary = source_summary(database_target(), team_id=PUBLIC_TEAM_ID)
+        if not summary.empty:
+            st.dataframe(summary, width="stretch", hide_index=True)
+        _render_admin_login()
+        return
+    _render_meet_manager(PUBLIC_TEAM_ID, include_bundled_reload=True)
 
 
 def about_page() -> None:
@@ -433,7 +586,12 @@ and swimmer-name input cannot be either.
 
 **Meet data** imports additional `.cl2` files. Re-importing a file with the
 same name replaces its earlier rows, and any imported meet can be removed
-again without affecting the others.
+again without affecting the others. Originals of imported files are stored
+and can be downloaded back.
+
+**Team accounts** (sidebar) give each team its own private space: meets a
+signed-in team imports are visible only to that team's sessions, alongside
+the shared public demo data. Passwords are stored as salted scrypt hashes.
 
 The bundled sample data is one publicly published meet-results file. All
 data stays in a local SQLite database on the server; the only external call
@@ -462,7 +620,11 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Swim Tracker")
-        st.metric("Completed results", f"{result_count(database_target()):,}")
+        _render_account_sidebar()
+        st.metric(
+            "Completed results",
+            f"{result_count(database_target(), team_ids=visible_team_ids()):,}",
+        )
         st.caption(
             "AI search ready"
             if _secret("OPENAI_API_KEY")
