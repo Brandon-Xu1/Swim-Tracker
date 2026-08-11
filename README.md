@@ -79,6 +79,16 @@ development. The test suite runs against SQLite by default; set
 `SWIMTRACKER_TEST_DATABASE_URL` to a Postgres URL to run the database tests
 against Postgres as well.
 
+## Protect meet data on public deployments
+
+Everyone who visits the deployed app shares one database. Set an
+`ADMIN_PASSWORD` secret (same TOML format as above) to require a password
+before anyone can import, remove, or reload meet data; searching stays open
+to everyone. Password comparison uses `hmac.compare_digest`, and the
+password itself is read only server-side. When `ADMIN_PASSWORD` is not
+configured — for example during local development — write access stays
+open and the app behaves as before.
+
 ## Configure the OpenAI API key safely
 
 Filter search works without a key. To enable **Ask AI**, create a new key on

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from datetime import date
+import hmac
 import os
 from pathlib import Path
 
@@ -64,6 +66,41 @@ def _secret(name: str, default: str | None = None) -> str | None:
 
 
 SEEDED_META_KEY = "seeded_bundled_meet"
+ADMIN_SESSION_KEY = "admin_unlocked"
+
+
+def verify_admin_password(supplied: str, expected: str) -> bool:
+    return hmac.compare_digest(supplied.encode(), expected.encode())
+
+
+def admin_unlocked(session: MutableMapping | None = None) -> bool:
+    """Whether this session may import or remove meet data.
+
+    With no ADMIN_PASSWORD configured (local development), writes stay open.
+    """
+    expected = _secret("ADMIN_PASSWORD")
+    if not expected:
+        return True
+    if session is None:
+        session = st.session_state
+    return bool(session.get(ADMIN_SESSION_KEY))
+
+
+def _render_admin_login() -> None:
+    st.info(
+        "Importing or removing meet data on this deployment requires the "
+        "admin password. Searching does not."
+    )
+    with st.form("admin_login"):
+        supplied = st.text_input("Admin password", type="password")
+        submitted = st.form_submit_button("Unlock meet data management")
+    if submitted:
+        expected = _secret("ADMIN_PASSWORD") or ""
+        if verify_admin_password(supplied, expected):
+            st.session_state[ADMIN_SESSION_KEY] = True
+            st.rerun()
+        else:
+            st.error("That password is not correct.")
 
 
 def prepare_database() -> None:
@@ -288,6 +325,12 @@ def data_page() -> None:
         st.info("No meet data has been imported.")
     else:
         st.dataframe(summary, width="stretch", hide_index=True)
+
+    if not admin_unlocked():
+        _render_admin_login()
+        return
+
+    if not summary.empty:
         with st.expander("Remove an imported meet"):
             source_to_remove = st.selectbox(
                 "Meet file to remove", summary["Source file"]
