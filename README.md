@@ -1,5 +1,7 @@
 # Swim Tracker
 
+[![Tests](https://github.com/Brandon-Xu1/Swim-Tracker/actions/workflows/tests.yml/badge.svg)](https://github.com/Brandon-Xu1/Swim-Tracker/actions/workflows/tests.yml)
+
 Swim Tracker is a Streamlit app for importing Hy-Tek/Team Manager `.cl2` meet
 files and searching completed individual swim results. It supports ordinary
 filter-based search and optional natural-language search.
