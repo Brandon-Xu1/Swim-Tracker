@@ -86,6 +86,20 @@ development. The test suite runs against SQLite by default; set
 `SWIMTRACKER_TEST_DATABASE_URL` to a Postgres URL to run the database tests
 against Postgres as well.
 
+## Deploy on Render
+
+The repository includes a [`render.yaml`](render.yaml) blueprint. In Render,
+choose **New → Blueprint**, select this repository, and Render creates a free
+web service that installs `requirements.txt` and starts Streamlit bound to
+`0.0.0.0` on Render's `$PORT`, with `/_stcore/health` as the health check.
+Set `DATABASE_URL`, `ADMIN_PASSWORD`, and optionally `OPENAI_API_KEY` as
+environment variables in the Render dashboard; they are intentionally not
+committed. Secrets are read from environment variables first, so no
+`secrets.toml` is needed on Render. The free instance spins down after about
+15 minutes without traffic; an uptime monitor (for example UptimeRobot)
+pinging `https://<your-service>.onrender.com/_stcore/health` every 5 minutes
+keeps it awake.
+
 ## Protect meet data on public deployments
 
 Everyone who visits the deployed app shares one database. Set an
