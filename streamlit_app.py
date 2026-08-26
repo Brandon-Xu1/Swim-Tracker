@@ -538,6 +538,18 @@ def _render_meet_manager(team_id: int, *, include_bundled_reload: bool) -> None:
             st.rerun()
 
 
+def _render_sample_download() -> None:
+    """Offer the bundled meet file so any visitor can try an import."""
+    if not DEFAULT_DATA_FILE.exists():
+        return
+    st.download_button(
+        "Download a sample .cl2 file to try importing",
+        DEFAULT_DATA_FILE.read_bytes(),
+        file_name=DEFAULT_DATA_FILE.name,
+        mime="application/octet-stream",
+    )
+
+
 def data_page() -> None:
     st.title("Meet Data")
 
@@ -550,6 +562,7 @@ def data_page() -> None:
             "demo data. Re-importing a file with the same name replaces that "
             "file's previous rows instead of creating duplicates."
         )
+        _render_sample_download()
         _render_meet_manager(team_id, include_bundled_reload=False)
         return
 
@@ -558,6 +571,7 @@ def data_page() -> None:
         "can search. Sign in or register a team account in the sidebar to "
         "import meets that only your team can see."
     )
+    _render_sample_download()
     if not admin_unlocked():
         summary = source_summary(database_target(), team_id=PUBLIC_TEAM_ID)
         if not summary.empty:
@@ -593,11 +607,12 @@ and can be downloaded back.
 signed-in team imports are visible only to that team's sessions, alongside
 the shared public demo data. Passwords are stored as salted scrypt hashes.
 
-The bundled sample data is one publicly published meet-results file. All
-data stays in a local SQLite database on the server; the only external call
-is the optional OpenAI request that interprets **Ask AI** questions, which
-sends the question text and the list of age groups, never the results
-themselves.
+The bundled sample data is one publicly published meet-results file. Data
+is stored through SQLAlchemy in either a local SQLite file or a hosted
+Postgres database such as Neon, so deployed instances keep imported meets
+across restarts. The only external call is the optional OpenAI request
+that interprets **Ask AI** questions, which sends the question text and
+the list of age groups, never the results themselves.
 
 Source code and documentation:
 [github.com/Brandon-Xu1/Swim-Tracker](https://github.com/Brandon-Xu1/Swim-Tracker)
