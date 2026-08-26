@@ -118,6 +118,10 @@ raw_files_table = Table(
 
 _ENGINES: dict[str, Engine] = {}
 
+# Database URLs whose tables are known to exist, so repeated calls do not
+# re-run ``create_all`` reflection queries against a remote database.
+_INITIALIZED: set[str] = set()
+
 
 def _database_url(target: str | Path) -> str:
     value = str(target)
@@ -151,7 +155,9 @@ def _engine(target: str | Path) -> Engine:
 
 
 def _forget_engine(target: str | Path) -> None:
-    engine = _ENGINES.pop(_database_url(target), None)
+    url = _database_url(target)
+    _INITIALIZED.discard(url)
+    engine = _ENGINES.pop(url, None)
     if engine is not None:
         engine.dispose()
 
@@ -162,7 +168,11 @@ def _utc_now_iso() -> str:
 
 def initialize_database(target: str | Path) -> None:
     """Create any missing tables without touching existing data."""
+    url = _database_url(target)
+    if url in _INITIALIZED:
+        return
     metadata.create_all(_engine(target))
+    _INITIALIZED.add(url)
 
 
 def get_meta(target: str | Path, key: str) -> str | None:
@@ -216,6 +226,7 @@ def rebuild_database(
     with engine.begin() as connection:
         metadata.drop_all(connection)
         metadata.create_all(connection)
+    _INITIALIZED.add(url)
     replace_source_results(target, results)
     return len(results)
 

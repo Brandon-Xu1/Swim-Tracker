@@ -204,6 +204,23 @@ def _render_account_sidebar() -> None:
                         st.rerun()
 
 
+@st.cache_resource(show_spinner="Preparing the database…")
+def _database_prepared(target: str) -> bool:
+    """Run the schema check and seeding once per server process, not per click."""
+    prepare_database()
+    return True
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_filter_options(target: str, team_ids: tuple[int, ...]) -> dict:
+    return filter_options(target, team_ids=list(team_ids))
+
+
+def _clear_cached_data() -> None:
+    """Drop cached filter options after meet data changes."""
+    _cached_filter_options.clear()
+
+
 def _render_admin_login() -> None:
     st.info(
         "Importing or removing meet data on this deployment requires the "
@@ -300,7 +317,7 @@ def search_page() -> None:
     st.title("Swim Tracker")
     st.write("Search completed individual results from imported meet files.")
 
-    options = filter_options(database_target(), team_ids=visible_team_ids())
+    options = _cached_filter_options(database_target(), tuple(visible_team_ids()))
     manual_tab, ai_tab = st.tabs(["Filters", "Ask AI"])
 
     with manual_tab:
@@ -474,6 +491,7 @@ def _render_meet_manager(team_id: int, *, include_bundled_reload: bool) -> None:
                 st.success(
                     f"Removed {removed:,} results from {source_to_remove}."
                 )
+                _clear_cached_data()
                 st.rerun()
         with st.expander("Download an original meet file"):
             source_to_download = st.selectbox(
@@ -519,6 +537,7 @@ def _render_meet_manager(team_id: int, *, include_bundled_reload: bool) -> None:
                     f"Imported {len(parsed):,} results from "
                     f"{uploaded_file.name}."
                 )
+                _clear_cached_data()
                 st.rerun()
 
     if include_bundled_reload:
@@ -535,7 +554,13 @@ def _render_meet_manager(team_id: int, *, include_bundled_reload: bool) -> None:
                 DEFAULT_DATA_FILE.read_bytes(),
             )
             st.success(f"Reloaded {len(parsed):,} completed results.")
+            _clear_cached_data()
             st.rerun()
+
+
+@st.cache_data(show_spinner=False)
+def _sample_file_bytes(path: str) -> bytes:
+    return Path(path).read_bytes()
 
 
 def _render_sample_download() -> None:
@@ -544,7 +569,7 @@ def _render_sample_download() -> None:
         return
     st.download_button(
         "Download a sample .cl2 file to try importing",
-        DEFAULT_DATA_FILE.read_bytes(),
+        _sample_file_bytes(str(DEFAULT_DATA_FILE)),
         file_name=DEFAULT_DATA_FILE.name,
         mime="application/octet-stream",
     )
@@ -628,7 +653,7 @@ def main() -> None:
     )
 
     try:
-        prepare_database()
+        _database_prepared(database_target())
     except (OSError, ValueError) as exc:
         st.error(f"Swim Tracker could not prepare its database: {exc}")
         st.stop()
