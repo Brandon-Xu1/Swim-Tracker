@@ -1,7 +1,8 @@
+import hashlib
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from streamlit.testing.v1 import AppTest
@@ -21,8 +22,10 @@ class AdminGateUnitTests(unittest.TestCase):
         self.assertFalse(streamlit_app.verify_admin_password("wrong", "secret"))
         self.assertFalse(streamlit_app.verify_admin_password("", "secret"))
 
-    def test_unlocked_when_no_password_is_configured(self) -> None:
+    def test_locked_by_default_and_explicit_local_write_opt_in(self) -> None:
         with patch.dict(os.environ, {"ADMIN_PASSWORD": ""}, clear=False):
+            self.assertFalse(streamlit_app.admin_unlocked(session={}))
+        with patch.dict(os.environ, {"ADMIN_PASSWORD": "", "ALLOW_PUBLIC_WRITES": "true"}):
             self.assertTrue(streamlit_app.admin_unlocked(session={}))
 
     def test_locked_until_session_is_marked_unlocked(self) -> None:
@@ -30,7 +33,9 @@ class AdminGateUnitTests(unittest.TestCase):
             self.assertFalse(streamlit_app.admin_unlocked(session={}))
             self.assertTrue(
                 streamlit_app.admin_unlocked(
-                    session={streamlit_app.ADMIN_SESSION_KEY: True}
+                    session={
+                        streamlit_app.ADMIN_SESSION_KEY: hashlib.sha256(b"hunter22").hexdigest()
+                    }
                 )
             )
 
@@ -50,30 +55,18 @@ class AdminGatePageTests(unittest.TestCase):
 
                 self.assertEqual(len(app.exception), 0)
                 labels = [button.label for button in app.button]
-                self.assertFalse(
-                    any("Reload bundled" in label for label in labels)
-                )
+                self.assertFalse(any("Reload bundled" in label for label in labels))
 
                 app.text_input[0].set_value("wrong")
-                next(
-                    button
-                    for button in app.button
-                    if "Unlock" in button.label
-                ).click()
+                next(button for button in app.button if "Unlock" in button.label).click()
                 app.run()
                 self.assertEqual(len(app.error), 1)
 
                 app.text_input[0].set_value("hunter22")
-                next(
-                    button
-                    for button in app.button
-                    if "Unlock" in button.label
-                ).click()
+                next(button for button in app.button if "Unlock" in button.label).click()
                 app.run()
                 labels = [button.label for button in app.button]
-                self.assertTrue(
-                    any("Reload bundled" in label for label in labels)
-                )
+                self.assertTrue(any("Reload bundled" in label for label in labels))
 
 
 if __name__ == "__main__":

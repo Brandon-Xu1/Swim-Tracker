@@ -28,9 +28,7 @@ def client_returning(output_parsed) -> Mock:
 
 class AISearchTests(unittest.TestCase):
     def test_interpretation_returns_validated_filters(self) -> None:
-        expected = make_filters(
-            course="SCY", date_from="2024-12-01", date_to="2024-12-31"
-        )
+        expected = make_filters(course="SCY", date_from="2024-12-01", date_to="2024-12-31")
         with patch(
             "swim_tracker.ai_search.OpenAI",
             return_value=client_returning(expected),
@@ -45,31 +43,35 @@ class AISearchTests(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_unparseable_output_raises_value_error(self) -> None:
-        with patch(
-            "swim_tracker.ai_search.OpenAI",
-            return_value=client_returning(None),
+        with (
+            patch(
+                "swim_tracker.ai_search.OpenAI",
+                return_value=client_returning(None),
+            ),
+            self.assertRaises(ValueError),
         ):
-            with self.assertRaises(ValueError):
-                interpret_search(
-                    "anything",
-                    api_key="test-key",
-                    model="test-model",
-                    available_groups=["Girls 11-12"],
-                )
+            interpret_search(
+                "anything",
+                api_key="test-key",
+                model="test-model",
+                available_groups=["Girls 11-12"],
+            )
 
     def test_hallucinated_group_is_rejected(self) -> None:
         hallucinated = make_filters(group_label="Girls 99-100")
-        with patch(
-            "swim_tracker.ai_search.OpenAI",
-            return_value=client_returning(hallucinated),
+        with (
+            patch(
+                "swim_tracker.ai_search.OpenAI",
+                return_value=client_returning(hallucinated),
+            ),
+            self.assertRaises(ValueError),
         ):
-            with self.assertRaises(ValueError):
-                interpret_search(
-                    "fastest girls 99-100 times",
-                    api_key="test-key",
-                    model="test-model",
-                    available_groups=["Girls 11-12", "Boys 11-12"],
-                )
+            interpret_search(
+                "fastest girls 99-100 times",
+                api_key="test-key",
+                model="test-model",
+                available_groups=["Girls 11-12", "Boys 11-12"],
+            )
 
     def test_invalid_date_is_rejected_as_value_error(self) -> None:
         # pydantic.ValidationError subclasses ValueError, so the app's

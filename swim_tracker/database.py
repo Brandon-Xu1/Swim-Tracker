@@ -39,7 +39,6 @@ from sqlalchemy.pool import NullPool
 
 from .parser import SwimResult
 
-
 COURSE_LABELS = {"Y": "SCY", "S": "SCM", "L": "LCM"}
 COURSE_CODES = {label: code for code, label in COURSE_LABELS.items()}
 
@@ -78,9 +77,7 @@ results_table = Table(
     Column("time_seconds", Float, nullable=False),
     Column("course", Text, nullable=False),
     Column("meet_date", Text, nullable=False),
-    UniqueConstraint(
-        "team_id", "source_file", "source_row", name="uq_results_team_source"
-    ),
+    UniqueConstraint("team_id", "source_file", "source_row", name="uq_results_team_source"),
     Index("results_name_idx", "name"),
     Index("results_event_idx", "distance_yards", "stroke"),
     Index("results_group_idx", "group_label"),
@@ -147,9 +144,7 @@ def _engine(target: str | Path) -> Engine:
             # temporary databases in tests can be deleted immediately.
             engine = create_engine(url, poolclass=NullPool)
         else:
-            engine = create_engine(
-                url, pool_pre_ping=True, pool_size=2, max_overflow=3
-            )
+            engine = create_engine(url, pool_pre_ping=True, pool_size=2, max_overflow=3)
         _ENGINES[url] = engine
     return engine
 
@@ -167,11 +162,34 @@ def _utc_now_iso() -> str:
 
 
 def initialize_database(target: str | Path) -> None:
-    """Create any missing tables without touching existing data."""
+    """Create missing tables and apply the additive legacy team-scope migration."""
+    from . import storage  # noqa: F401 -- register service tables on shared metadata
+
     url = _database_url(target)
     if url in _INITIALIZED:
         return
-    metadata.create_all(_engine(target))
+    engine = _engine(target)
+    inspector = inspect(engine)
+    if inspector.has_table("results"):
+        columns = {column["name"] for column in inspector.get_columns("results")}
+        missing = (set(results_table.c.keys()) - {"id"}) - columns
+        if missing == {"team_id"}:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE results ADD COLUMN team_id INTEGER NOT NULL DEFAULT 0")
+                )
+        elif missing:
+            raise ValueError(
+                "Unsupported legacy database. Back it up and migrate it explicitly; existing data has been preserved."
+            )
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO app_meta (key, value) VALUES ('schema_revision', '2') "
+                "ON CONFLICT (key) DO UPDATE SET value=excluded.value"
+            )
+        )
     _INITIALIZED.add(url)
 
 
@@ -204,9 +222,7 @@ def schema_is_current(target: str | Path) -> bool:
     return REQUIRED_RESULT_COLUMNS.issubset(columns)
 
 
-def rebuild_database(
-    target: str | Path, results: Sequence[SwimResult]
-) -> int:
+def rebuild_database(target: str | Path, results: Sequence[SwimResult]) -> int:
     """Replace a legacy or empty database with the current schema and data."""
     url = _database_url(target)
     if url.startswith("sqlite"):
@@ -261,17 +277,22 @@ def replace_source_results(
     with _engine(target).begin() as connection:
         connection.execute(
             text(
-                "DELETE FROM results "
-                "WHERE source_file = :source_file AND team_id = :team_id"
+                "DELETE FROM result_profiles WHERE result_id IN "
+                "(SELECT id FROM results WHERE source_file=:source_file AND team_id=:team_id)"
             ),
             {"source_file": source_file, "team_id": team_id},
         )
         connection.execute(
+            text("DELETE FROM imports WHERE filename=:source_file AND team_id=:team_id"),
+            {"source_file": source_file, "team_id": team_id},
+        )
+        connection.execute(
+            text("DELETE FROM results WHERE source_file = :source_file AND team_id = :team_id"),
+            {"source_file": source_file, "team_id": team_id},
+        )
+        connection.execute(
             insert_sql,
-            [
-                {"team_id": team_id, **asdict(result)}
-                for result in results
-            ],
+            [{"team_id": team_id, **asdict(result)} for result in results],
         )
     return len(results)
 
@@ -284,39 +305,36 @@ def delete_source_results(
     with _engine(target).begin() as connection:
         connection.execute(
             text(
-                "DELETE FROM raw_files "
-                "WHERE filename = :source_file AND team_id = :team_id"
+                "DELETE FROM result_profiles WHERE result_id IN "
+                "(SELECT id FROM results WHERE source_file=:source_file AND team_id=:team_id)"
             ),
             {"source_file": source_file, "team_id": team_id},
         )
+        connection.execute(
+            text("DELETE FROM imports WHERE filename=:source_file AND team_id=:team_id"),
+            {"source_file": source_file, "team_id": team_id},
+        )
+        connection.execute(
+            text("DELETE FROM raw_files WHERE filename = :source_file AND team_id = :team_id"),
+            {"source_file": source_file, "team_id": team_id},
+        )
         outcome = connection.execute(
-            text(
-                "DELETE FROM results "
-                "WHERE source_file = :source_file AND team_id = :team_id"
-            ),
+            text("DELETE FROM results WHERE source_file = :source_file AND team_id = :team_id"),
             {"source_file": source_file, "team_id": team_id},
         )
         return outcome.rowcount
 
 
-def result_count(
-    target: str | Path, team_ids: Sequence[int] | None = None
-) -> int:
+def result_count(target: str | Path, team_ids: Sequence[int] | None = None) -> int:
     initialize_database(target)
-    query = text(
-        "SELECT COUNT(*) FROM results WHERE team_id IN :team_ids"
-    ).bindparams(bindparam("team_ids", expanding=True))
+    query = text("SELECT COUNT(*) FROM results WHERE team_id IN :team_ids").bindparams(
+        bindparam("team_ids", expanding=True)
+    )
     with _engine(target).connect() as connection:
-        return int(
-            connection.execute(
-                query, {"team_ids": _team_scope(team_ids)}
-            ).scalar_one()
-        )
+        return int(connection.execute(query, {"team_ids": _team_scope(team_ids)}).scalar_one())
 
 
-def source_summary(
-    target: str | Path, team_id: int = PUBLIC_TEAM_ID
-) -> pd.DataFrame:
+def source_summary(target: str | Path, team_id: int = PUBLIC_TEAM_ID) -> pd.DataFrame:
     initialize_database(target)
     query = text(
         """
@@ -361,25 +379,17 @@ def get_team(target: str | Path, name: str):
     initialize_database(target)
     with _engine(target).connect() as connection:
         return connection.execute(
-            text(
-                "SELECT id, name, password_hash FROM teams "
-                "WHERE name_key = :name_key"
-            ),
+            text("SELECT id, name, password_hash FROM teams WHERE name_key = :name_key"),
             {"name_key": name.strip().lower()},
         ).fetchone()
 
 
-def save_raw_file(
-    target: str | Path, team_id: int, filename: str, content: bytes
-) -> None:
+def save_raw_file(target: str | Path, team_id: int, filename: str, content: bytes) -> None:
     """Keep the original uploaded file so it can be downloaded again."""
     initialize_database(target)
     with _engine(target).begin() as connection:
         connection.execute(
-            text(
-                "DELETE FROM raw_files "
-                "WHERE team_id = :team_id AND filename = :filename"
-            ),
+            text("DELETE FROM raw_files WHERE team_id = :team_id AND filename = :filename"),
             {"team_id": team_id, "filename": filename},
         )
         connection.execute(
@@ -392,24 +402,17 @@ def save_raw_file(
         )
 
 
-def get_raw_file(
-    target: str | Path, team_id: int, filename: str
-) -> bytes | None:
+def get_raw_file(target: str | Path, team_id: int, filename: str) -> bytes | None:
     initialize_database(target)
     with _engine(target).connect() as connection:
         row = connection.execute(
-            text(
-                "SELECT content FROM raw_files "
-                "WHERE team_id = :team_id AND filename = :filename"
-            ),
+            text("SELECT content FROM raw_files WHERE team_id = :team_id AND filename = :filename"),
             {"team_id": team_id, "filename": filename},
         ).fetchone()
     return None if row is None else bytes(row[0])
 
 
-def filter_options(
-    target: str | Path, team_ids: Sequence[int] | None = None
-) -> dict[str, object]:
+def filter_options(target: str | Path, team_ids: Sequence[int] | None = None) -> dict[str, object]:
     initialize_database(target)
     scope = {"team_ids": _team_scope(team_ids)}
 
@@ -431,8 +434,7 @@ def filter_options(
             row[0]
             for row in connection.execute(
                 scoped(
-                    "SELECT DISTINCT stroke FROM results "
-                    "WHERE team_id IN :team_ids ORDER BY stroke"
+                    "SELECT DISTINCT stroke FROM results WHERE team_id IN :team_ids ORDER BY stroke"
                 ),
                 scope,
             )
@@ -450,23 +452,15 @@ def filter_options(
         course_codes = {
             row[0]
             for row in connection.execute(
-                scoped(
-                    "SELECT DISTINCT course FROM results "
-                    "WHERE team_id IN :team_ids"
-                ),
+                scoped("SELECT DISTINCT course FROM results WHERE team_id IN :team_ids"),
                 scope,
             )
         }
-        courses = [
-            label
-            for code, label in COURSE_LABELS.items()
-            if code in course_codes
-        ] + sorted(course_codes - COURSE_LABELS.keys())
+        courses = [label for code, label in COURSE_LABELS.items() if code in course_codes] + sorted(
+            course_codes - COURSE_LABELS.keys()
+        )
         date_row = connection.execute(
-            scoped(
-                "SELECT MIN(meet_date), MAX(meet_date) FROM results "
-                "WHERE team_id IN :team_ids"
-            ),
+            scoped("SELECT MIN(meet_date), MAX(meet_date) FROM results WHERE team_id IN :team_ids"),
             scope,
         ).fetchone()
     return {
@@ -491,6 +485,7 @@ def search_results(
     date_to: str | None = None,
     sort_order: str = "name",
     limit: int = 200,
+    offset: int = 0,
     team_ids: Sequence[int] | None = None,
 ) -> pd.DataFrame:
     """Search results with fixed SQL and bound values only."""
@@ -526,11 +521,12 @@ def search_results(
 
     where = f"WHERE {' AND '.join(clauses)}"
     order_by = (
-        "time_seconds ASC, LOWER(name) ASC"
+        "time_seconds ASC, LOWER(name) ASC, id ASC"
         if sort_order == "fastest"
-        else "LOWER(name) ASC, distance_yards ASC, stroke ASC, meet_date ASC"
+        else "LOWER(name) ASC, distance_yards ASC, stroke ASC, meet_date ASC, id ASC"
     )
     parameters["limit"] = max(1, min(int(limit), 1000))
+    parameters["offset"] = max(0, int(offset))
 
     query = text(
         f"""
@@ -545,13 +541,17 @@ def search_results(
                     WHEN 'L' THEN 'LCM'
                     ELSE course
                END AS "Course",
-               time_seconds AS "Time (Seconds)"
+               time_seconds AS "Time (Seconds)",
+               source_file AS "Meet",
+               COUNT(*) OVER() AS "_total"
         FROM results
         {where}
         ORDER BY {order_by}
-        LIMIT :limit
+        LIMIT :limit OFFSET :offset
         """
     ).bindparams(bindparam("team_ids", expanding=True))
 
     with _engine(target).connect() as connection:
-        return pd.read_sql_query(query, connection, params=parameters)
+        frame = pd.read_sql_query(query, connection, params=parameters)
+    frame.attrs["total"] = int(frame["_total"].iloc[0]) if not frame.empty else 0
+    return frame.drop(columns=["_total"])

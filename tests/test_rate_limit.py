@@ -1,15 +1,15 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-import streamlit as st
-
-import streamlit_app
 from swim_tracker.ai_search import AISearchFilters
 from swim_tracker.rate_limit import (
     RateLimitedError,
     SlidingWindowLimit,
     try_acquire,
 )
+from swim_tracker.ui import search_page as ui_search
 
 
 class RateLimitTests(unittest.TestCase):
@@ -54,8 +54,10 @@ class CachedInterpretationTests(unittest.TestCase):
     """The cache and the rate limit combine so hits never spend quota."""
 
     def setUp(self) -> None:
-        streamlit_app._interpret_cached.clear()
-        st.session_state.pop(streamlit_app.AI_HISTORY_SESSION_KEY, None)
+        ui_search.interpret_cached.clear()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.target = str(Path(self.temp.name) / "quota.db")
         self.calls: list[str] = []
         self.filters = AISearchFilters(
             swimmer_name=None,
@@ -70,29 +72,22 @@ class CachedInterpretationTests(unittest.TestCase):
         )
 
     def _interpret(self, query: str) -> AISearchFilters:
-        return streamlit_app._interpret_cached(
-            query, "test-model", ("Girls 11-12",), "test-key"
+        return ui_search.interpret_cached(
+            self.target, 1, query, "test-model", ("Girls 11-12",), "2026-09-15", 200, "test-key"
         )
 
-    def _fake(self, query, *, api_key, model, available_groups):
+    def _fake(self, query, *, api_key, model, available_groups, reference_date):
         self.calls.append(query)
         return self.filters
 
     def test_identical_questions_hit_openai_once(self) -> None:
-        with patch.object(
-            streamlit_app, "interpret_search", side_effect=self._fake
-        ):
+        with patch.object(ui_search, "interpret_search", side_effect=self._fake):
             self._interpret("fastest 100 free")
             self._interpret("fastest 100 free")
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(
-            len(st.session_state[streamlit_app.AI_HISTORY_SESSION_KEY]), 1
-        )
 
     def test_sixth_distinct_question_in_a_minute_is_limited(self) -> None:
-        with patch.object(
-            streamlit_app, "interpret_search", side_effect=self._fake
-        ):
+        with patch.object(ui_search, "interpret_search", side_effect=self._fake):
             for index in range(5):
                 self._interpret(f"question {index}")
             with self.assertRaises(RateLimitedError):

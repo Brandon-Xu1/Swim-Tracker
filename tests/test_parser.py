@@ -1,5 +1,5 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from swim_tracker.parser import (
     parse_cl2_file,
@@ -33,9 +33,7 @@ def make_d01_line(
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_FILE = (
-    ROOT / "Meet Results-2024 TAC TITANS Jingle Bells Meet-20Dec2024-001.cl2"
-)
+DATA_FILE = ROOT / "Meet Results-2024 TAC TITANS Jingle Bells Meet-20Dec2024-001.cl2"
 
 
 class ParserTests(unittest.TestCase):
@@ -47,17 +45,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(len(self.results), 3999)
 
     def test_parses_full_five_character_event_id(self) -> None:
-        mile_results = [
-            result for result in self.results if result.event_id == "16501"
-        ]
+        mile_results = [result for result in self.results if result.event_id == "16501"]
         self.assertEqual(len(mile_results), 2)
         self.assertEqual(mile_results[0].event, "1650-yard Free")
         self.assertEqual(mile_results[0].distance_yards, 1650)
 
     def test_preserves_eight_character_time(self) -> None:
-        long_result = next(
-            result for result in self.results if result.time == "19:06.32"
-        )
+        long_result = next(result for result in self.results if result.time == "19:06.32")
         self.assertAlmostEqual(long_result.time_seconds, 1146.32)
 
     def test_meter_courses_are_labeled_in_meters(self) -> None:

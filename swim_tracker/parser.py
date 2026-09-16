@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import re
-
 
 STROKES = {
     "1": ("Free", "Freestyle"),
@@ -50,8 +50,10 @@ def parse_time_to_seconds(value: str) -> float:
     else:
         raise ValueError(f"Unsupported swim time: {value!r}")
 
-    if seconds < 0:
-        raise ValueError("A swim time cannot be negative.")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("A swim time must be a positive, finite number.")
+    if len(parts) == 2 and (int(parts[0]) < 0 or not 0 <= float(parts[1]) < 60):
+        raise ValueError("Seconds after a colon must be between 0 and 60.")
     return seconds
 
 
@@ -89,9 +91,7 @@ def _parse_event(event_id: str, course: str) -> tuple[str, int, str]:
     if len(event_id) < 2 or not event_id.isdigit():
         raise ValueError(f"Unsupported event ID: {event_id!r}")
 
-    short_stroke, full_stroke = STROKES.get(
-        event_id[-1], ("Unknown", "Unknown")
-    )
+    short_stroke, full_stroke = STROKES.get(event_id[-1], ("Unknown", "Unknown"))
     distance = int(event_id[:-1])
     unit = "meter" if course in ("L", "S") else "yard"
     return f"{distance}-{unit} {short_stroke}", distance, full_stroke
@@ -101,29 +101,53 @@ def _parse_date(raw_date: str) -> str:
     return datetime.strptime(raw_date.strip(), "%m%d%Y").date().isoformat()
 
 
-def parse_cl2_text(text: str, source_file: str = "uploaded.cl2") -> list[SwimResult]:
+@dataclass(frozen=True)
+class ImportIssue:
+    line: int
+    reason: str
+
+
+@dataclass
+class ImportReport:
+    results: list[SwimResult]
+    issues: list[ImportIssue]
+    excluded: int = 0
+    individual_rows: int = 0
+
+
+def inspect_cl2_text(text: str, source_file: str = "uploaded.cl2") -> ImportReport:
     """Parse completed individual results from CL2 text.
 
     D01 rows without a final time are scratches, disqualifications, or records
     without a completed result and are intentionally omitted.
     """
     results: list[SwimResult] = []
+    report = ImportReport(results, [])
 
     for row_number, line in enumerate(text.splitlines(), start=1):
         if not line.startswith("D01"):
             continue
+        report.individual_rows += 1
         if len(line) < 97:
+            report.issues.append(ImportIssue(row_number, "Truncated individual result."))
             continue
 
         raw_time = line[88:96].strip()
         if not raw_time:
+            report.excluded += 1
             continue
 
         try:
             age, gender = _parse_age_gender(line[63:67])
             event_id = line[67:72].strip()
             course = line[96:97].strip() or "Unknown"
+            if course not in {"Y", "S", "L"}:
+                raise ValueError("Unknown pool course.")
             event, distance, stroke = _parse_event(event_id, course)
+            if stroke == "Unknown" or distance <= 0:
+                raise ValueError("Unsupported event.")
+            if not line[7:31].strip():
+                raise ValueError("Missing swimmer name.")
             result = SwimResult(
                 source_file=source_file,
                 source_row=row_number,
@@ -141,12 +165,18 @@ def parse_cl2_text(text: str, source_file: str = "uploaded.cl2") -> list[SwimRes
                 course=course,
                 meet_date=_parse_date(line[80:88]),
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            report.issues.append(ImportIssue(row_number, str(exc)))
             continue
 
         results.append(result)
 
-    return results
+    return report
+
+
+def parse_cl2_text(text: str, source_file: str = "uploaded.cl2") -> list[SwimResult]:
+    """Compatibility helper; interactive imports should use inspect_cl2_text."""
+    return inspect_cl2_text(text, source_file).results
 
 
 def parse_cl2_file(path: str | Path) -> list[SwimResult]:

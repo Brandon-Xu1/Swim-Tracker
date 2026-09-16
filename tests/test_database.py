@@ -1,10 +1,11 @@
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from swim_tracker.database import (
     _engine,
+    _forget_engine,
     delete_source_results,
     metadata,
     replace_source_results,
@@ -13,11 +14,8 @@ from swim_tracker.database import (
 )
 from swim_tracker.parser import parse_cl2_file
 
-
 ROOT = Path(__file__).resolve().parents[1]
-DATA_FILE = (
-    ROOT / "Meet Results-2024 TAC TITANS Jingle Bells Meet-20Dec2024-001.cl2"
-)
+DATA_FILE = ROOT / "Meet Results-2024 TAC TITANS Jingle Bells Meet-20Dec2024-001.cl2"
 
 
 class DatabaseTests(unittest.TestCase):
@@ -50,9 +48,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_filters_by_course(self) -> None:
         replace_source_results(self.database_path, self.results)
-        scy_matches = search_results(
-            self.database_path, course="SCY", limit=1000
-        )
+        scy_matches = search_results(self.database_path, course="SCY", limit=1000)
         lcm_matches = search_results(self.database_path, course="LCM")
         self.assertFalse(scy_matches.empty)
         self.assertTrue((scy_matches["Course"] == "SCY").all())
@@ -75,21 +71,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(matches.empty)
         self.assertTrue((matches["Date"] == last_date).all())
 
-        none_matched = search_results(
-            self.database_path, date_from="2030-01-01"
-        )
+        none_matched = search_results(self.database_path, date_from="2030-01-01")
         self.assertTrue(none_matched.empty)
 
     def test_delete_source_removes_only_that_source(self) -> None:
         replace_source_results(self.database_path, self.results)
-        removed = delete_source_results(
-            self.database_path, self.results[0].source_file
-        )
+        removed = delete_source_results(self.database_path, self.results[0].source_file)
         self.assertEqual(removed, 3999)
         self.assertEqual(result_count(self.database_path), 0)
-        self.assertEqual(
-            delete_source_results(self.database_path, "missing.cl2"), 0
-        )
+        self.assertEqual(delete_source_results(self.database_path, "missing.cl2"), 0)
 
     def test_name_input_cannot_be_executed_as_sql(self) -> None:
         replace_source_results(self.database_path, self.results)
@@ -112,9 +102,11 @@ class PostgresDatabaseTests(DatabaseTests):
         self.database_path = os.environ["SWIMTRACKER_TEST_DATABASE_URL"]
         self.results = parse_cl2_file(DATA_FILE)
         metadata.drop_all(_engine(self.database_path))
+        _forget_engine(self.database_path)
 
     def tearDown(self) -> None:
         metadata.drop_all(_engine(self.database_path))
+        _forget_engine(self.database_path)
 
 
 if __name__ == "__main__":

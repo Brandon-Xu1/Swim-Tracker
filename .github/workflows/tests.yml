@@ -29,6 +29,12 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Lint and format
+        run: |
+          ruff check streamlit_app.py swim_tracker scripts tests
+          ruff format --check streamlit_app.py swim_tracker scripts tests
+      - name: Validate AI evaluation cases (no API calls)
+        run: python -m scripts.evaluate_ai
       - name: Run tests (SQLite and Postgres backends)
         env:
           SWIMTRACKER_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/swimtest

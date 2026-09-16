@@ -1,0 +1,21 @@
+{
+  "dataset": "synthetic; one public team; 2,000 synthetic athlete IDs; 100 SCY freestyle",
+  "rows": 100000,
+  "queries_per_type": 40,
+  "python": "3.12.8",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "machine": "arm64",
+  "backend": "local SQLite",
+  "insert_seconds": 0.863,
+  "measurement": "in-process SQL + DataFrame, including total-match count; warm cache; sequential; excludes browser/network",
+  "results": {
+    "name_search": {
+      "median_ms": 14.57,
+      "p95_ms": 15.02
+    },
+    "event_ranking": {
+      "median_ms": 62.77,
+      "p95_ms": 72.7
+    }
+  }
+}

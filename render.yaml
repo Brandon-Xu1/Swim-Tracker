@@ -26,3 +26,7 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-5.6-luna
+      - key: ALLOW_PUBLIC_WRITES
+        value: "false"
+      - key: AI_DAILY_CALL_LIMIT
+        value: "200"
