@@ -4,7 +4,7 @@ services:
   - type: web
     name: swim-tracker
     runtime: python
-    plan: free
+    plan: 0.5c-512mb
     branch: main
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
